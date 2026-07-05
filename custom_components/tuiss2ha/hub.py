@@ -416,48 +416,55 @@ class TuissBlind:
     async def get_from_blind(self, command, callback) -> None:
         """Get the battery state from the blind as good or bad."""
 
-        # connect to the blind first
-        await self.ensure_connected()
+        timeout = 5.0
+        attempts = 3
 
-        assert self._client is not None
-        notify_started = False
-        try:
-            await self._client.start_notify(BLIND_NOTIFY_CHARACTERISTIC, callback)
-            notify_started = True
-        except BleakError as e:
-            _LOGGER.debug("%s: Failed to start notify: %s. Attempting to stop and restart.", self.name, e)
+        response_received = False
+        attempt = 0
+
+        while not response_received and attempt < attempts:
+
+            attempt += 1
+            _LOGGER.debug("%s: Attempt %d in get_from_blind" % (self.name, attempt))
+
+            # connect to the blind first
+            await self.ensure_connected()
+
+            assert self._client is not None
+            notify_started = False
+            command_sent = False
             try:
-                # when need to overwrite the existing notification
-                await self._client.stop_notify(BLIND_NOTIFY_CHARACTERISTIC)
                 await self._client.start_notify(BLIND_NOTIFY_CHARACTERISTIC, callback)
                 notify_started = True
-            except BleakError as retry_error:
-                _LOGGER.warning("%s: Could not establish notifications: %s", self.name, retry_error)
-                # Characteristic may not exist or device disconnected; ensure cleanup
-                await self.disconnect()
-                return
-
-        # Only send command if we successfully started notifications and are still connected
-        if notify_started and self._client and self._client.is_connected:
-            try:
-                await self.send_command(UUID, command)
-            except Exception as e:
-                _LOGGER.error("%s: Error sending command during get_from_blind: %s", self.name, e)
-                await self.disconnect()
-                return
-
-            # Wait for the response/callback to complete with timeout to prevent hanging
-            if self._client:
+            except BleakError as e:
+                _LOGGER.debug("%s: Failed to start notify: %s. Attempting to stop and restart.", self.name, e)
                 try:
-                    await asyncio.wait_for(self.wait_for_stop(), timeout=10.0)
+                    # when need to overwrite the existing notification
+                    await self._client.stop_notify(BLIND_NOTIFY_CHARACTERISTIC)
+                    await self._client.start_notify(BLIND_NOTIFY_CHARACTERISTIC, callback)
+                    notify_started = True
+                except BleakError as retry_error:
+                    _LOGGER.warning("%s: Could not establish notifications: %s", self.name, retry_error)
+                    # Characteristic may not exist or device disconnected; ensure cleanup
+
+            # Only send command if we successfully started notifications and are still connected
+            if notify_started and self._client and self._client.is_connected:
+                try:
+                    await self.send_command(UUID, command)
+                    command_sent = True
+                except Exception as e:
+                    _LOGGER.error("%s: Error sending command during get_from_blind: %s", self.name, e)
+
+            # Only if command was sent, wait for the response/callback to complete with timeout,
+            # to prevent hanging
+            if command_sent and self._client and self._client.is_connected:
+                try:
+                    await asyncio.wait_for(self.wait_for_stop(), timeout=timeout)
+                    response_received = True
                 except asyncio.TimeoutError:
                     _LOGGER.warning("%s: Timeout waiting for response in get_from_blind", self.name)
-                finally:
-                    await self.disconnect()
-        else:
-            # If we couldn't start notify, ensure we disconnect
-            if not notify_started:
-                await self.disconnect()
+
+            await self.disconnect()
                     
 
     async def get_battery_status(self) -> None:
